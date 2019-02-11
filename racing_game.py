@@ -6,6 +6,7 @@ from pytmx.util_pygame import load_pygame
 
 W_WIDTH = 1024
 W_HEIGHT = 768
+TILESIZE = 64
 FPS = 60
 TWO_PI = pi * 2
 
@@ -26,13 +27,15 @@ def load_map(file):
                           tiled_map.height * tiled_map.tileheight))
     map_objects = tiled_map.get_layer_by_name('objects_1')
     # iterate through each tile layer and blit the corresponding tile
+    layer_data = []
     for layer in tiled_map.layers:
         if hasattr(layer, 'data'):
+            layer_data.append(layer.data)
             for x, y, image in layer.tiles():
                 if image:
                     bg_image.blit(image, (x * tiled_map.tilewidth, 
                                           y * tiled_map.tileheight))
-    return bg_image, map_objects
+    return bg_image, map_objects, layer_data
 
 
 def construct_polyeder(center, n, size, rotation=0):
@@ -75,7 +78,7 @@ class Camera(object):
         h = self.game.screen_rect.h
         self.offset.x = self.target.rect.centerx + w // 2 * -1
         self.offset.y = self.target.rect.centery + h // 2 * -1
-        pg.display.set_caption(f'{self.target.rect.center}')
+        #pg.display.set_caption(f'{self.target.rect.center}')
         
 
         # camera can't go over upper left borders
@@ -111,14 +114,16 @@ class Game:
         
         self.shapes = []
         self.particles = []
-        self.car = Car(self)
+        self.car = Car(self)               
         self.car.move_to((3105, 2260))
+
         self.car.rotate(pi / -2)
         
-        self.map, self.map_objects = load_map('track_1')
+        self.map, self.map_objects, self.layer_data = load_map('track_1')
         self.map_rect = self.map.get_rect()
 
         self.camera = Camera(self, self.car)
+        
         
     def events(self):
         for event in pg.event.get():
@@ -175,7 +180,7 @@ class Shape:
         self.rect = self.construct_rect()
         
     
-    def update(self, dt):                  
+    def update(self, dt):          
         # construct edges and diagonals based on the new coordinates
         self.edges = [Line(self.points[i], self.points[i + 1]) 
                       for i in range(-1, len(self.points) - 1)]
@@ -258,7 +263,7 @@ class Shape:
         # move the center to a given position and change all points accordingly
         # just a convenience function, could possibly be refactored
         old_center = self.center
-        self.center = position
+        self.center = vec(position)
         amount = position - old_center
         for point in self.points:
                 point += amount
@@ -303,17 +308,26 @@ class Car(Shape):
         self.speed = 15
         
         self.steer_sensitivity = 8 # the higher the more sensitive
-        
     
     def rotate(self, angle):
-        super().rotate(angle) 
+        super().rotate(angle)  
         self.rotation += angle
         # rotate the images accordingly
         self.image = pg.transform.rotate(self.image_orig, 
                                          self.rotation * -360 / TWO_PI)
     
     
-    def update(self, dt):
+    def update(self, dt):   
+        # check if off road
+        grid = self.game.layer_data[1]
+        grid_pos_x = int(self.center.x / TILESIZE)
+        grid_pos_y = int(self.center.y // TILESIZE)
+        pg.display.set_caption(f'{grid[grid_pos_y][grid_pos_x]}')
+        if grid[grid_pos_y][grid_pos_x] == 0:
+            self.friction = 0.9
+        else:
+            self.friction = 0.98
+        
         keys = pg.key.get_pressed()
         rot = keys[pg.K_d] - keys[pg.K_a]
         # backwards is only half the speed
