@@ -1,8 +1,17 @@
+"""
+Prototype of a top-down car racing game
+
+Controls:
+    W: Accelerate forward
+    S: Accelerate backwards
+    A and D: Steer left and right, respectively
+    H: Toggle debug mode (displays some rects and vectors)
+"""
 import pygame as pg
 import traceback
 from math import pi, sin, cos, inf
 from pytmx.util_pygame import load_pygame
-
+import pickle
 
 W_WIDTH = 1024
 W_HEIGHT = 768
@@ -13,14 +22,17 @@ TWO_PI = pi * 2
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
-GREEN = (50, 100, 20)
-DARKGREEN = (24, 50, 10)
-GREY = (100, 100, 100)
 
 vec = pg.math.Vector2
 
+# ------------------ HELPER FUNCTIONS -----------------------------------------
 
 def load_map(file):
+    """
+    load a Tiled map in .tmx format and return a background image Surface, 
+    map objects as a TiledObjectGroup and layer_data as a list of 2D arrays
+    with tile indices
+    """
     tiled_map = load_pygame('assets/{}.tmx'.format(file))
     # create empty surface based on tile map dimensions
     bg_image = pg.Surface((tiled_map.width * tiled_map.tilewidth,
@@ -65,6 +77,18 @@ def rotate_point(point, center, angle):
     point += center
 
 
+def blit_alpha(target, source, location, opacity):
+    # https://nerdparadise.com/programming/pygameblitopacity
+    # TODO: This seems unnecessary computational intensive
+    x = location[0]
+    y = location[1]
+    temp = pg.Surface((source.get_width(), source.get_height())).convert()
+    temp.blit(target, (-x, -y))
+    temp.blit(source, (0, 0))
+    temp.set_alpha(opacity)        
+    target.blit(temp, location)
+
+
 class Camera(object):
     def __init__(self, game, target):
         self.game = game
@@ -74,17 +98,22 @@ class Camera(object):
         
     
     def update(self, dt):  
+        # calculate the camera offset 
+        # it is based on its target's rect plus the middle of the screen
+        # multiplied by -1 because it goes in the opposite direction
         w = self.game.screen_rect.w
         h = self.game.screen_rect.h
         self.offset.x = self.target.rect.centerx + w // 2 * -1
         self.offset.y = self.target.rect.centery + h // 2 * -1
-        #pg.display.set_caption(f'{self.target.rect.center}')
         
+        # change the offset based on the target's velocity direction
+        # to let the players see better where they are driving towards
+        self.offset += self.target.vel * 0.4
 
-        # camera can't go over upper left borders
+        # camera can't go over upper and left map borders
         self.offset.x = max(self.offset.x, 0)
         self.offset.y = max(self.offset.y, 0)
-        # camera can't go over bottom right borders
+        # camera can't go over bottom and right map borders
         self.offset.x = min(self.offset.x, (self.game.map_rect.w - 
                                             self.game.screen_rect.w))
         self.offset.y = min(self.offset.y, (self.game.map_rect.h - 
@@ -92,17 +121,21 @@ class Camera(object):
 
     
     def apply_mouse(self, m_pos):
+        # currently not needed
         return m_pos - self.offset
     
 
     def apply_pos(self, pos):
+        # translates any position vector / point for drawing
         return pos - self.offset
 
 
     def apply_rect(self, rect):
+        # translates a given rect for drawing
         return pg.Rect(rect.topleft - self.offset, rect.size)
 
 
+# ------------------ GAME OBJECT ----------------------------------------------
 
 class Game:
     def __init__(self):
@@ -113,60 +146,149 @@ class Game:
         self.running = True
         
         self.shapes = []
-        self.particles = []
+        self.particles = pg.sprite.Group() # probably faster for large groups than a simple list
         self.car = Car(self)               
-        self.car.move_to((3105, 2260))
-
+        self.car.move_to((3105, 2260)) # move the car to the start/finish line
         self.car.rotate(pi / -2)
         
-        self.map, self.map_objects, self.layer_data = load_map('track_1')
+        self.track = 'track_1'
+        # get tilemap, objects and tile data from tmx file
+        self.map, self.map_objects, self.layer_data = load_map(self.track)
         self.map_rect = self.map.get_rect()
-
+        
+        # build checkpoints from map data
+        self.checkpoints = []
+        for obj in self.map_objects:
+            if obj.name == 'checkpoint':
+                self.checkpoints.append(pg.Rect(obj.x, obj.y, obj.width, obj.height))
+        
         self.camera = Camera(self, self.car)
+        
+        self.round_time = 0
+        self.highscores = {}
+        # try accessing the highscore data from a file
+        # if no file exists, set highscore to infinity
+        try:
+            with open('highscore.dat', 'rb') as file:
+                self.highscores = pickle.load(file)
+        except:
+            self.highscores[self.track] = inf
+        self.font = pg.font.SysFont('Arial', 24)
+        
+        self.debug_mode = False
         
         
     def events(self):
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 self.running = False
+            elif event.type == pg.KEYDOWN:
+                if event.key == pg.K_h:
+                    self.debug_mode = not self.debug_mode
     
     
     def update(self, dt):
-        #pg.display.set_caption(f'FPS: {round(self.clock.get_fps(), 2)}')
-                 
+        pg.display.set_caption(f'FPS: {round(self.clock.get_fps(), 2)}')
+        
+        self.round_time += dt
+        if self.car.tile == 42:
+            # 42 is the finish line
+            # TODO: probably going to make this a rect object like the other checkpoints
+            if len(self.car.checkpoints) >= 2:
+                # if player passed the checkpoints, check for highscores
+                # and reset round time and checkpoints list
+                if self.round_time < self.highscores[self.track]:
+                    self.highscores[self.track] = self.round_time
+                self.car.checkpoints = []
+                self.round_time = 0
         self.camera.update(dt)
         
         for shape in self.shapes:
             shape.update(dt)
-        for p in self.particles:
-            p.update(dt)
+        self.particles.update(dt)
        
         
     def draw(self):
-        self.screen.fill(GREEN)
         self.screen.blit(self.map, self.camera.apply_pos(self.map_rect.topleft))
         for p in self.particles:
             p.draw(self.screen)
         for shape in self.shapes:
             shape.draw(self.screen)
+        if self.debug_mode:
+            # some draw events for debugging
+            for check in self.checkpoints:
+                pg.draw.rect(self.screen, WHITE, self.camera.apply_rect(check), 2)
+            # visualise the camera offset
+            v = self.camera.apply_pos(self.car.center) + self.car.vel * 0.4
+            x = int(v.x)
+            y = int(v.y)
+            pg.draw.circle(self.screen, RED, (x, y), 4)
+            pg.draw.line(self.screen, RED, 
+                         self.camera.apply_pos(self.car.center), v, 2 )
+            # some lines that cut the screen rect in half
+            pg.draw.line(self.screen, WHITE, (0, W_HEIGHT // 2), 
+                                             (W_WIDTH, W_HEIGHT // 2), 1)
+            pg.draw.line(self.screen, WHITE, (W_WIDTH // 2, 0), 
+                                             (W_WIDTH // 2, W_HEIGHT), 1)
+            
+        self.display_time()
+        self.display_speed()
         
         pg.display.update()
+        
+    
+    def cleanup(self):
+        with open('highscore.dat', 'wb') as file:
+            pickle.dump(self.highscores, file)
+            
+    
+    def display_time(self):
+        if self.highscores[self.track] < inf:
+            time = f'LAP TIME: {round(self.round_time, 3)}'
+            best = f'BEST TIME: {round(self.highscores[self.track], 3)}'
+        else:
+            time = f'LAP TIME: {round(self.round_time, 3)}'
+            best = f'BEST TIME: -----'
+        txt_surf = self.font.render(time, False, WHITE)
+        txt_rect = txt_surf.get_rect()
+        txt_rect.topleft = self.screen_rect.midtop
+        self.screen.blit(txt_surf, txt_rect)
+        txt_surf = self.font.render(best, False, WHITE)
+        txt_rect = txt_surf.get_rect()
+        txt_rect.topleft = self.screen_rect.midtop
+        txt_rect.y += 40
+        self.screen.blit(txt_surf, txt_rect)
+    
+    
+    def display_speed(self):
+        speed = self.car.vel_len * 0.2
+        speed_str = f'SPEED: {round(speed, 1)} MP/H'
+        txt_surf = self.font.render(speed_str, False, WHITE)
+        txt_rect = txt_surf.get_rect()
+        txt_rect.topleft = self.screen_rect.topleft
+        txt_rect.x += 100
+        self.screen.blit(txt_surf, txt_rect)
         
         
     def run(self):
         while self.running:
             delta_time = self.clock.tick(FPS) / 1000.0
-            self.events()
-            self.update(delta_time)
-            self.draw()
+            if delta_time < 0.2:
+                # prevents the game from advancing if the window is dragged
+                self.events()
+                self.update(delta_time)
+                self.draw()
+        self.cleanup()
         pg.quit()
         
 
+# ------------------- SPRITES -------------------------------------------------
 
 class Shape:
-    '''
+    """
     This class constructs a polygon from any number of given vectors
-    '''
+    and can rotate the points around its center
+    """
     def __init__(self, game, points, static=False):
         self.game = game
         self.game.shapes.append(self)
@@ -180,7 +302,7 @@ class Shape:
         self.rect = self.construct_rect()
         
     
-    def update(self, dt):          
+    def update(self):          
         # construct edges and diagonals based on the new coordinates
         self.edges = [Line(self.points[i], self.points[i + 1]) 
                       for i in range(-1, len(self.points) - 1)]
@@ -203,6 +325,7 @@ class Shape:
     
     
     def draw(self, screen):
+        # mostly for debugging
         if self.overlap: 
             color = RED
         else:
@@ -214,15 +337,16 @@ class Shape:
         x = int(self.game.camera.apply_pos(self.center)[0])
         y = int(self.game.camera.apply_pos(self.center)[1])
         pg.draw.circle(screen, RED, (x, y), 4)
+        
         '''
-        # for debugging
         for diag in self.diagonals:
             diag.draw(screen, color)
         for edge in self.edges:
-            edge.draw(screen, color)
-        '''
+            edge.draw(screen, color)'''
+
         pg.draw.rect(screen, WHITE, self.game.camera.apply_rect(self.rect), 1)
         # reset the overlap flag after all collisions are checked
+        # TODO: This should be in a "end update" function or something
         self.overlap = False
         
         
@@ -236,6 +360,7 @@ class Shape:
     
     
     def construct_rect(self):
+        # builds the smallest AABB rectangle that contains all the points
         min_x = inf
         max_x = -inf
         min_y = inf
@@ -287,27 +412,37 @@ class Shape:
 
 
 class Car(Shape):
+    """
+    Car class that can be controlled
+    maybe make this a parent class for player and enemy cars as well
+    """
     def __init__(self, game):
+        # construct a rectangle that lays on its long side, right side is the front of the car
         points = [vec(64, 0), vec(64, 32), vec(0, 32), vec(0, 0)]
         super().__init__(game, points)
         
-        # adjust center to simulate steering with front axis
+        # move the center to simulate steering with front axis
         self.center.x += 20
         
         self.image_orig = pg.image.load('assets/Cars/car_red_1.png').convert_alpha()
         self.image_orig = pg.transform.rotate(self.image_orig, 270)
         self.image_orig = pg.transform.scale(self.image_orig, self.rect.size)
         self.image = self.image_orig.copy()
+        # image for tire tracks
+        self.tire_image = pg.image.load('assets/tires.png').convert_alpha()
         
-        self.particle_timer = 0
+        self.particle_timer = 0 # timer for emitting particles (tire tracks or dust etc)
              
         self.acc = vec()
         self.vel = vec()
-        self.friction = 0.98
+        self.friction = 1 #the higher, the longer the friction vector
         self.rotation = 0
-        self.speed = 15
+        self.speed = 700
+        self.steer_sensitivity = 300 # the higher the less sensitive
         
-        self.steer_sensitivity = 8 # the higher the more sensitive
+        self.tile = None # the tile number the car is colliding with
+        self.checkpoints = [] # list of checkpoints passed
+
     
     def rotate(self, angle):
         super().rotate(angle)  
@@ -318,47 +453,66 @@ class Car(Shape):
     
     
     def update(self, dt):   
-        # check if off road
+        # check if the car is off road (tile based collision)
         grid = self.game.layer_data[1]
         grid_pos_x = int(self.center.x / TILESIZE)
-        grid_pos_y = int(self.center.y // TILESIZE)
-        pg.display.set_caption(f'{grid[grid_pos_y][grid_pos_x]}')
-        if grid[grid_pos_y][grid_pos_x] == 0:
-            self.friction = 0.9
+        grid_pos_y = int(self.center.y / TILESIZE)
+        #pg.display.set_caption(f'{grid[grid_pos_y][grid_pos_x]}')
+        self.tile = grid[grid_pos_y][grid_pos_x]
+        # set friction based on tile collision
+        # TODO: set these to variables
+
+        if self.tile == 0:
+            self.friction = 5
         else:
-            self.friction = 0.98
-        
+            self.friction = 1
+
+        # check for checkpoints
+        for check in self.game.checkpoints:
+            if (check not in self.checkpoints and 
+                self.rect.colliderect(check)):
+                self.checkpoints.append(check)
+        # get user inputs
         keys = pg.key.get_pressed()
         rot = keys[pg.K_d] - keys[pg.K_a]
         # backwards is only half the speed
         move = keys[pg.K_w] - (keys[pg.K_s] * 0.5)
             
         # rotate
-        angle = pi * rot * dt * (self.vel.length() / self.steer_sensitivity)
+        self.vel_len = self.vel.length()
+        angle = pi * rot * (self.vel_len / self.steer_sensitivity) * dt # angle in radians
+        angle_deg = self.rotation * 360 / TWO_PI # angle in degrees
         self.rotate(angle)
         # move
-        self.acc.x += move * dt * self.speed
-        angle_deg = self.rotation * 360 / TWO_PI
-        self.acc = self.acc.rotate(angle_deg)
-        self.vel += self.acc
-        self.vel *= self.friction
-        self.move(self.vel)
+        # calculate acceleration vector and rotate it based on the shape's angle
+        self.acc.x = move * self.speed
+        self.acc = self.acc.rotate(angle_deg) 
+        temp_accel = self.acc - self.friction * self.vel
+        self.vel += temp_accel * dt
+        vel_change = self.vel * dt
+        self.move(vel_change)
         self.acc *= 0
         
+        # create particles to simulate tire tracks
         self.particle_timer += dt
         if self.particle_timer >= 0.01 and self.vel.length() > 0.5:
             self.particle_timer = 0
-            p1 = self.points[2] + 0.3 * (self.center - self.points[2])
-            p2 = self.points[3] + 0.3 * (self.center - self.points[3])
-            Particle(self.game, (10, 10), p1, BLACK)
-            Particle(self.game, (10, 10), p2, BLACK)
-        
-        super().update(dt)
+            # calculate two points that simulate the position of the tires
+            p1 = self.points[0] - 0.3 * (self.center - self.points[2])
+            p2 = self.points[1] - 0.3 * (self.center - self.points[3])
+            leng = max(2, abs(int(self.vel_len * 0.02)))
+
+            Particle(self.game, self.tire_image, p1, -angle_deg, (leng, 6))
+            Particle(self.game, self.tire_image, p2, -angle_deg, (leng, 6))
+
+        # after movement, update the shape's points
+        super().update()
     
     
     def draw(self, screen):
         screen.blit(self.image, self.game.camera.apply_pos(self.rect.topleft))
-        #super().draw(screen)
+        if self.game.debug_mode:
+            super().draw(screen)
 
 
 
@@ -402,35 +556,41 @@ class Line:
                 return False
 
 
-class Particle:
-    def __init__(self, game, size, position, color):
+class Particle(pg.sprite.Sprite):
+    """
+    simple sprite that fades out
+    TODO: this should be a more complex base class with movement, randomness etc
+    """
+    def __init__(self, game, image, position, rotation, size=None):
         self.game = game
-        self.game.particles.append(self)
+        super().__init__(self.game.particles)
         self.position = position
-        self.color = color
-        self.image = pg.Surface(size)
-        self.image.fill(self.color)
+        self.image = image.copy()
+        if size:
+            self.image = pg.transform.scale(self.image, size)
+        self.image = pg.transform.rotate(self.image, rotation)
         self.rect = self.image.get_rect()
         self.rect.center = self.position
-        self.alpha = 20
+        self.alpha = 40
     
     
     def update(self, dt):
-        self.alpha -= dt * 0.5
+        self.alpha -= dt * 10
         if self.alpha <= 0:
             self.game.particles.remove(self)
             return
-        self.image.set_alpha(self.alpha)
     
         
     def draw(self, screen):
-        screen.blit(self.image, self.game.camera.apply_rect(self.rect))
-    
+        blit_alpha(screen, self.image, self.game.camera.apply_rect(self.rect),
+                   self.alpha)
+
+
+# ------------------ MAIN --------------------------------------------------------
     
 if __name__ == '__main__':
     try:
         g = Game()
-        #mymap = load_pygame('assets/{}.tmx'.format('track_1'))
         g.run()
     except:
         traceback.print_exc()
