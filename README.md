@@ -1,7 +1,8 @@
 # Car_game
 
 
-requires pygame and pytmx
+requires python 3.x (tested with 3.7 only), 
+    pygame and pytmx
 
 control with WASD
 
