@@ -6,12 +6,23 @@ Controls:
     S: Accelerate backwards
     A and D: Steer left and right, respectively
     H: Toggle debug mode (displays some rects and vectors)
+    
+
+Ideas for AI:
+    simple:
+        - "manual" placing of waypoints and steering behavior towards targets
+    complicated
+        - Smart Rockets
+        - Neuroevolution with Raycast sensor input
+
 """
 import pygame as pg
 import traceback
 from math import pi, sin, cos, inf
 from pytmx.util_pygame import load_pygame
 import pickle
+from random import randint, random, choice
+import json
 
 W_WIDTH = 1024
 W_HEIGHT = 768
@@ -23,7 +34,9 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 
+
 vec = pg.math.Vector2
+VEC_INF = vec(inf, inf)
 
 # ------------------ HELPER FUNCTIONS -----------------------------------------
 
@@ -38,6 +51,7 @@ def load_map(file):
     bg_image = pg.Surface((tiled_map.width * tiled_map.tilewidth,
                           tiled_map.height * tiled_map.tileheight))
     map_objects = tiled_map.get_layer_by_name('objects_1')
+    map_objects += tiled_map.get_layer_by_name('objects_2')
     # iterate through each tile layer and blit the corresponding tile
     layer_data = []
     for layer in tiled_map.layers:
@@ -87,6 +101,19 @@ def blit_alpha(target, source, location, opacity):
     temp.blit(source, (0, 0))
     temp.set_alpha(opacity)        
     target.blit(temp, location)
+    
+    
+def remap(n, start1, stop1, start2, stop2):
+    # https://p5js.org/reference/#/p5/map
+    newval = (n - start1) / (stop1 - start1) * (stop2 - start2) + start2
+    if (start2 < stop2):
+        return constrain(newval, start2, stop2)
+    else:
+        return constrain(newval, stop2, start2) 
+
+
+def constrain(n, low, high):
+    return max(min(n, high), low)
 
 
 class Camera(object):
@@ -133,6 +160,12 @@ class Camera(object):
     def apply_rect(self, rect):
         # translates a given rect for drawing
         return pg.Rect(rect.topleft - self.offset, rect.size)
+    
+
+
+class Offroad(pg.Rect):
+   def __hash__(self):
+       return hash((self.x, self.y, self.w, self.h))
 
 
 # ------------------ GAME OBJECT ----------------------------------------------
@@ -147,9 +180,6 @@ class Game:
         
         self.shapes = []
         self.particles = pg.sprite.Group() # probably faster for large groups than a simple list
-        self.car = Car(self)               
-        self.car.move_to((3105, 2260)) # move the car to the start/finish line
-        self.car.rotate(pi / -2)
         
         self.track = 'track_1'
         # get tilemap, objects and tile data from tmx file
@@ -158,18 +188,27 @@ class Game:
         
         # build checkpoints from map data
         self.checkpoints = []
+        self.finish_line = None
         for obj in self.map_objects:
             if obj.name == 'checkpoint':
                 self.checkpoints.append(pg.Rect(obj.x, obj.y, obj.width, obj.height))
-        
+            elif obj.name == 'finish_line':
+                self.finish_line = pg.Rect(obj.x, obj.y, obj.width, obj.height)
+
+        self.car = Car(self)               
+        self.car.move_to((3105, 2260)) # move the car to the start/finish line
+        self.car.rotate(pi / -2)
+    
         self.camera = Camera(self, self.car)
         
         self.round_time = 0
+        self.last_round_time = 0
+        self.best_round_time = inf
         self.highscores = {}
         # try accessing the highscore data from a file
         # if no file exists, set highscore to infinity
         try:
-            with open('highscore.dat', 'rb') as file:
+            with open('data/highscore.dat', 'rb') as file:
                 self.highscores = pickle.load(file)
         except:
             self.highscores[self.track] = inf
@@ -189,25 +228,30 @@ class Game:
     
     def update(self, dt):
         pg.display.set_caption(f'FPS: {round(self.clock.get_fps(), 2)}')
+        #pg.display.set_caption(f'frame: {self.camera.target.frames}')
         
         self.round_time += dt
-        if self.car.tile == 42:
+        if self.camera.target.tile == 42:
             # 42 is the finish line
             # TODO: probably going to make this a rect object like the other checkpoints
-            if len(self.car.checkpoints) >= 2:
+            if len(self.camera.target.checkpoints) >= 2:
                 # if player passed the checkpoints, check for highscores
                 # and reset round time and checkpoints list
+                self.last_round_time = self.round_time
+                if self.round_time < self.best_round_time:
+                    self.best_round_time = self.round_time
                 if self.round_time < self.highscores[self.track]:
                     self.highscores[self.track] = self.round_time
-                self.car.checkpoints = []
+                self.camera.target.checkpoints = []
                 self.round_time = 0
+                
         self.camera.update(dt)
         
         for shape in self.shapes:
             shape.update(dt)
         self.particles.update(dt)
-       
-        
+    
+    
     def draw(self):
         self.screen.blit(self.map, self.camera.apply_pos(self.map_rect.topleft))
         for p in self.particles:
@@ -216,52 +260,61 @@ class Game:
             shape.draw(self.screen)
         if self.debug_mode:
             # some draw events for debugging
+
             for check in self.checkpoints:
                 pg.draw.rect(self.screen, WHITE, self.camera.apply_rect(check), 2)
             # visualise the camera offset
-            v = self.camera.apply_pos(self.car.center) + self.car.vel * 0.4
+            v = self.camera.apply_pos(self.camera.target.center) + self.camera.target.vel * 0.4
             x = int(v.x)
             y = int(v.y)
             pg.draw.circle(self.screen, RED, (x, y), 4)
             pg.draw.line(self.screen, RED, 
-                         self.camera.apply_pos(self.car.center), v, 2 )
+                         self.camera.apply_pos(self.camera.target.center), v, 2 )
             # some lines that cut the screen rect in half
             pg.draw.line(self.screen, WHITE, (0, W_HEIGHT // 2), 
                                              (W_WIDTH, W_HEIGHT // 2), 1)
             pg.draw.line(self.screen, WHITE, (W_WIDTH // 2, 0), 
                                              (W_WIDTH // 2, W_HEIGHT), 1)
-            
+
+                     
         self.display_time()
-        self.display_speed()
-        
+        self.display_speed()      
+
         pg.display.update()
         
     
     def cleanup(self):
-        with open('highscore.dat', 'wb') as file:
+        # save best round time to file
+        with open('data/highscore.dat', 'wb') as file:
             pickle.dump(self.highscores, file)
-            
+
     
     def display_time(self):
-        if self.highscores[self.track] < inf:
-            time = f'LAP TIME: {round(self.round_time, 3)}'
-            best = f'BEST TIME: {round(self.highscores[self.track], 3)}'
+        time = f'LAP TIME: {round(self.round_time, 3)}'
+        # TODO: maybe make these inline ifs inside the f string?
+        if self.last_round_time > 0:
+            last_time = f'LAST LAP: {round(self.last_round_time, 3)}'
         else:
-            time = f'LAP TIME: {round(self.round_time, 3)}'
-            best = f'BEST TIME: -----'
-        txt_surf = self.font.render(time, False, WHITE)
-        txt_rect = txt_surf.get_rect()
-        txt_rect.topleft = self.screen_rect.midtop
-        self.screen.blit(txt_surf, txt_rect)
-        txt_surf = self.font.render(best, False, WHITE)
-        txt_rect = txt_surf.get_rect()
-        txt_rect.topleft = self.screen_rect.midtop
-        txt_rect.y += 40
-        self.screen.blit(txt_surf, txt_rect)
+            last_time = f'LAST LAP: -----'
+        if self.best_round_time < inf:
+            best_time = f'BEST LAP: {round(self.best_round_time, 3)}'
+        else:
+            best_time = f'BEST LAP: -----'
+        if self.highscores[self.track] < inf:
+            record_time = f'LAP RECORD: {round(self.highscores[self.track], 3)}'
+        else:
+            record_time = f'LAP RECORD: -----'
+
+        for i, t in enumerate([time, last_time, best_time, record_time]):       
+            txt_surf = self.font.render(t, False, WHITE)
+            txt_rect = txt_surf.get_rect()
+            txt_rect.topleft = self.screen_rect.midtop
+            txt_rect.y += i * 30
+            self.screen.blit(txt_surf, txt_rect)
     
     
     def display_speed(self):
-        speed = self.car.vel_len * 0.2
+        speed = self.camera.target.vel_len * 0.2
         speed_str = f'SPEED: {round(speed, 1)} MP/H'
         txt_surf = self.font.render(speed_str, False, WHITE)
         txt_rect = txt_surf.get_rect()
@@ -269,11 +322,11 @@ class Game:
         txt_rect.x += 100
         self.screen.blit(txt_surf, txt_rect)
         
-        
+   
     def run(self):
         while self.running:
             delta_time = self.clock.tick(FPS) / 1000.0
-            if delta_time < 0.2:
+            if delta_time < 0.5:
                 # prevents the game from advancing if the window is dragged
                 self.events()
                 self.update(delta_time)
@@ -309,13 +362,15 @@ class Shape:
         self.diagonals = [Line(self.center, p) for p in self.points]
         self.rect = self.construct_rect()
         
+        '''
+        # leave that off for now
         for shape in self.game.shapes:
             # check for collisions with the other shapes
             if shape != self and self.rect.colliderect(shape.rect):
                 if self.shape_overlap(shape):
                     self.overlap = True
                     shape.overlap = True
-    
+        '''
     
     def rotate(self, angle):
         # rotate the edges around the shape's center
@@ -416,7 +471,7 @@ class Car(Shape):
     Car class that can be controlled
     maybe make this a parent class for player and enemy cars as well
     """
-    def __init__(self, game):
+    def __init__(self, game, color='red'):
         # construct a rectangle that lays on its long side, right side is the front of the car
         points = [vec(64, 0), vec(64, 32), vec(0, 32), vec(0, 0)]
         super().__init__(game, points)
@@ -424,7 +479,7 @@ class Car(Shape):
         # move the center to simulate steering with front axis
         self.center.x += 20
         
-        self.image_orig = pg.image.load('assets/Cars/car_red_1.png').convert_alpha()
+        self.image_orig = pg.image.load(f'assets/Cars/car_{color}_1.png').convert_alpha()
         self.image_orig = pg.transform.rotate(self.image_orig, 270)
         self.image_orig = pg.transform.scale(self.image_orig, self.rect.size)
         self.image = self.image_orig.copy()
@@ -438,11 +493,11 @@ class Car(Shape):
         self.friction = 1 #the higher, the longer the friction vector
         self.rotation = 0
         self.speed = 700
-        self.steer_sensitivity = 300 # the higher the less sensitive
+        self.steer_sensitivity = 600 # the higher the less sensitive (600 for human)
         
         self.tile = None # the tile number the car is colliding with
-        self.checkpoints = [] # list of checkpoints passed
-
+        self.checkpoints = [] # list of checkpoints passed  
+     
     
     def rotate(self, angle):
         super().rotate(angle)  
@@ -452,18 +507,19 @@ class Car(Shape):
                                          self.rotation * -360 / TWO_PI)
     
     
-    def update(self, dt):   
+    def update(self, dt):      
         # check if the car is off road (tile based collision)
         grid = self.game.layer_data[1]
-        grid_pos_x = int(self.center.x / TILESIZE)
-        grid_pos_y = int(self.center.y / TILESIZE)
-        #pg.display.set_caption(f'{grid[grid_pos_y][grid_pos_x]}')
-        self.tile = grid[grid_pos_y][grid_pos_x]
-        # set friction based on tile collision
-        # TODO: set these to variables
-
+        if self.game.map_rect.collidepoint(self.center):
+            grid_pos_x = int(self.center.x / TILESIZE)
+            grid_pos_y = int(self.center.y / TILESIZE)
+            #pg.display.set_caption(f'{grid[grid_pos_y][grid_pos_x]}')
+            self.tile = grid[grid_pos_y][grid_pos_x]
+            
+            # set friction based on tile collision
+            # TODO: set these to variables
         if self.tile == 0:
-            self.friction = 5
+            self.friction = 4
         else:
             self.friction = 1
 
@@ -477,7 +533,7 @@ class Car(Shape):
         rot = keys[pg.K_d] - keys[pg.K_a]
         # backwards is only half the speed
         move = keys[pg.K_w] - (keys[pg.K_s] * 0.5)
-            
+       
         # rotate
         self.vel_len = self.vel.length()
         angle = pi * rot * (self.vel_len / self.steer_sensitivity) * dt # angle in radians
@@ -513,8 +569,8 @@ class Car(Shape):
         screen.blit(self.image, self.game.camera.apply_pos(self.rect.topleft))
         if self.game.debug_mode:
             super().draw(screen)
-
-
+            
+            
 
 class Line:
     '''
@@ -526,8 +582,12 @@ class Line:
         self.end = vec(end)
     
     
-    def draw(self, screen, color=WHITE, width=1):
-        pg.draw.line(screen, color, self.start, self.end, width)
+    def draw(self, screen, color=WHITE, width=1, camera=None):
+        if camera:
+            pg.draw.line(screen, color, camera.apply_pos(self.start), 
+                         camera.apply_pos(self.end), width)
+        else:
+            pg.draw.line(screen, color, self.start, self.end, width)
         
         
     def intersects_line(self, other, displacement):
@@ -554,6 +614,32 @@ class Line:
                 return True
             else:
                 return False
+            
+            
+    def get_lines_from_rect(self, rect):
+        l1 = Line(rect.topleft, rect.topright)
+        l2 = Line(rect.topright, rect.bottomright)
+        l3 = Line(rect.bottomright, rect.bottomleft)
+        l4 = Line(rect.bottomleft, rect.topleft)
+        return [l1, l2, l3, l4]
+    
+    
+    def intersects_rect(self, rect):
+        lines = self.get_lines_from_rect(rect)
+        lines_intersect = []
+        displacements = []
+        for line in lines:
+            displacement = vec()
+            if self.intersects_line(line, displacement):
+                lines_intersect.append(line)
+                displacements.append(displacement)
+        return lines_intersect, displacements
+
+
+    def rotate(self, angle):
+        # rotate the line's end point around its start point
+        rotate_point(self.start, self.end, angle)
+    
 
 
 class Particle(pg.sprite.Sprite):
