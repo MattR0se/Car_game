@@ -21,8 +21,8 @@ import traceback
 from math import pi, sin, cos, inf
 from pytmx.util_pygame import load_pygame
 import pickle
-from random import randint, random, choice
-import json
+from random import choice, randint
+#import json
 
 W_WIDTH = 1024
 W_HEIGHT = 768
@@ -33,6 +33,8 @@ TWO_PI = pi * 2
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
+
+ENEMY_CAR_COLORS = ['black', 'blue', 'green', 'yellow']
 
 
 vec = pg.math.Vector2
@@ -77,6 +79,11 @@ def construct_polyeder(center, n, size, rotation=0):
 
 def vec_to_int(vec):
     return (int(vec.x), int(vec.y))
+
+
+def limit(vector, lim):
+    if vector.length_squared() > (lim * lim):
+        vector.scale_to_length(lim)
 
 
 def rotate_point(point, center, angle):
@@ -149,7 +156,7 @@ class Camera(object):
     
     def apply_mouse(self, m_pos):
         # currently not needed
-        return m_pos - self.offset
+        return m_pos + self.offset
     
 
     def apply_pos(self, pos):
@@ -195,9 +202,30 @@ class Game:
             elif obj.name == 'finish_line':
                 self.finish_line = pg.Rect(obj.x, obj.y, obj.width, obj.height)
 
-        self.car = Car(self)               
+        self.car = Car_player(self)               
         self.car.move_to((3105, 2260)) # move the car to the start/finish line
         self.car.rotate(pi / -2)
+        
+        # store a path for the AI cars to follow, if none exists
+        try:
+            with open('data/paths.dat', 'rb') as file:
+                self.paths = pickle.load(file)
+                #print(self.paths)
+        except:
+            self.paths = [[] for i in range(10)]
+        
+        start_positions = [(3232, 2326),
+                           (3357, 2404),
+                           (3489, 2460),
+                           (3101, 2519),
+                           (3228, 2583),
+                           (3357, 2648),
+                           (3488, 2709)]
+
+        for pos in start_positions:
+            car = Car_AI(self, color=choice(ENEMY_CAR_COLORS), model=randint(1, 5))
+            car.move_to(pos) # move the car to the start/finish line
+            car.rotate(pi / -2)
     
         self.camera = Camera(self, self.car)
         
@@ -212,22 +240,41 @@ class Game:
                 self.highscores = pickle.load(file)
         except:
             self.highscores[self.track] = inf
+            
         self.font = pg.font.SysFont('Arial', 24)
         
         self.debug_mode = False
+            
+        self.edit_mode = False
+        self.edit_index = 0
         
         
     def events(self):
+        self.mouse_pressed = 0
+        self.mouse_pos = self.camera.apply_mouse(pg.mouse.get_pos())
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 self.running = False
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_h:
                     self.debug_mode = not self.debug_mode
+                elif event.key == pg.K_p:
+                    self.edit_mode = not self.edit_mode
+                elif event.unicode in '0123456789':
+                    self.edit_index = int(event.unicode)
+                
+            elif event.type == pg.MOUSEBUTTONDOWN:
+                self.mouse_pressed = event.button
+                #print(self.mouse_pos)
     
     
     def update(self, dt):
-        pg.display.set_caption(f'FPS: {round(self.clock.get_fps(), 2)}')
+        if self.edit_mode:
+            x = len(self.paths[self.edit_index])
+            check_empty = 'empty' if x == 0 else 'len ' + str(x) 
+            pg.display.set_caption(f'EDIT MODE ACTIVE: INDEX {self.edit_index} {check_empty}')
+        else:
+            pg.display.set_caption(f'FPS: {round(self.clock.get_fps(), 2)}')
         #pg.display.set_caption(f'frame: {self.camera.target.frames}')
         
         self.round_time += dt
@@ -250,6 +297,11 @@ class Game:
         for shape in self.shapes:
             shape.update(dt)
         self.particles.update(dt)
+        
+        # add points to self.path
+        if self.mouse_pressed == 1 and self.edit_mode:
+            if self.edit_index:
+                self.paths[self.edit_index].append(vec(self.mouse_pos))
     
     
     def draw(self):
@@ -271,10 +323,18 @@ class Game:
             pg.draw.line(self.screen, RED, 
                          self.camera.apply_pos(self.camera.target.center), v, 2 )
             # some lines that cut the screen rect in half
+            """
             pg.draw.line(self.screen, WHITE, (0, W_HEIGHT // 2), 
                                              (W_WIDTH, W_HEIGHT // 2), 1)
             pg.draw.line(self.screen, WHITE, (W_WIDTH // 2, 0), 
                                              (W_WIDTH // 2, W_HEIGHT), 1)
+            """
+            
+            # draw the path:
+            for path in self.paths:
+                if path and len(path) > 1:
+                    points = [self.camera.apply_pos(p) for p in path]
+                    pg.draw.lines(self.screen, WHITE, 4, points)
 
                      
         self.display_time()
@@ -287,6 +347,9 @@ class Game:
         # save best round time to file
         with open('data/highscore.dat', 'wb') as file:
             pickle.dump(self.highscores, file)
+        if self.edit_mode:
+            with open('data/paths.dat', 'wb') as file:
+                pickle.dump(self.paths, file)
 
     
     def display_time(self):
@@ -468,10 +531,9 @@ class Shape:
 
 class Car(Shape):
     """
-    Car class that can be controlled
-    maybe make this a parent class for player and enemy cars as well
+    Parent class for all cars
     """
-    def __init__(self, game, color='red'):
+    def __init__(self, game, color='red', model=1):
         # construct a rectangle that lays on its long side, right side is the front of the car
         points = [vec(64, 0), vec(64, 32), vec(0, 32), vec(0, 0)]
         super().__init__(game, points)
@@ -479,7 +541,7 @@ class Car(Shape):
         # move the center to simulate steering with front axis
         self.center.x += 20
         
-        self.image_orig = pg.image.load(f'assets/Cars/car_{color}_1.png').convert_alpha()
+        self.image_orig = pg.image.load(f'assets/Cars/car_{color}_{model}.png').convert_alpha()
         self.image_orig = pg.transform.rotate(self.image_orig, 270)
         self.image_orig = pg.transform.scale(self.image_orig, self.rect.size)
         self.image = self.image_orig.copy()
@@ -492,7 +554,7 @@ class Car(Shape):
         self.vel = vec()
         self.friction = 1 #the higher, the longer the friction vector
         self.rotation = 0
-        self.speed = 700
+        self.speed = 600
         self.steer_sensitivity = 600 # the higher the less sensitive (600 for human)
         
         self.tile = None # the tile number the car is colliding with
@@ -528,6 +590,39 @@ class Car(Shape):
             if (check not in self.checkpoints and 
                 self.rect.colliderect(check)):
                 self.checkpoints.append(check)
+        
+        # create particles to simulate tire tracks
+        self.particle_timer += dt
+        if self.particle_timer >= 0.01 and self.vel.length() > 0.5:
+            self.particle_timer = 0
+            # calculate two points that simulate the position of the tires
+            p1 = self.points[0] - 0.3 * (self.center - self.points[2])
+            p2 = self.points[1] - 0.3 * (self.center - self.points[3])
+            leng = max(2, abs(int(self.vel_len * 0.02)))
+            angle_deg = self.rotation * 360 / TWO_PI # angle in degrees
+            Particle(self.game, self.tire_image, p1, -angle_deg, (leng, 6))
+            Particle(self.game, self.tire_image, p2, -angle_deg, (leng, 6))
+
+        # after movement, update the shape's points
+        super().update()
+    
+    
+    def draw(self, screen):
+        screen.blit(self.image, self.game.camera.apply_pos(self.rect.topleft))
+        if self.game.debug_mode:
+            super().draw(screen)
+            
+
+
+class Car_player(Car):
+    """
+    Car child class than can be controlled by the player
+    """
+    def __init__(self, game):
+        super().__init__(game, color='red')  
+    
+    
+    def update(self, dt):      
         # get user inputs
         keys = pg.key.get_pressed()
         rot = keys[pg.K_d] - keys[pg.K_a]
@@ -549,28 +644,102 @@ class Car(Shape):
         self.move(vel_change)
         self.acc *= 0
         
-        # create particles to simulate tire tracks
-        self.particle_timer += dt
-        if self.particle_timer >= 0.01 and self.vel.length() > 0.5:
-            self.particle_timer = 0
-            # calculate two points that simulate the position of the tires
-            p1 = self.points[0] - 0.3 * (self.center - self.points[2])
-            p2 = self.points[1] - 0.3 * (self.center - self.points[3])
-            leng = max(2, abs(int(self.vel_len * 0.02)))
+        super().update(dt)
 
-            Particle(self.game, self.tire_image, p1, -angle_deg, (leng, 6))
-            Particle(self.game, self.tire_image, p2, -angle_deg, (leng, 6))
 
-        # after movement, update the shape's points
-        super().update()
+
+class Car_AI(Car):
+    """
+    Car child class than can be controlled by the player
+    """
+    def __init__(self, game, color, model=1):
+        super().__init__(game, color, model)  
+        
+        self.path = choice([p for p in self.game.paths if len(p) > 1])
+        self.target_index = 0
+        self.prev_angle = 0
+        
+        self.speed = 3000
     
     
-    def draw(self, screen):
-        screen.blit(self.image, self.game.camera.apply_pos(self.rect.topleft))
-        if self.game.debug_mode:
-            super().draw(screen)
+    def update(self, dt):           
+        # rotate
+        """
+        self.vel_len = self.vel.length()
+        angle = pi * rot * (self.vel_len / self.steer_sensitivity) * dt # angle in radians
+        angle_deg = self.rotation * 360 / TWO_PI # angle in degrees
+        """
+        temp = self.vel.angle_to(vec(1, 0)) * TWO_PI / -360
+        angle = temp - self.rotation
+        self.prev_angle = angle
+        self.rotate(angle)
+        self.vel_len = self.vel.length()
+
+        # move
+        # calculate acceleration vector
+        if len(self.path) >= 1:
+            self.seek_points(dt)
             
+        # seperate
+        others = [s for s in self.game.shapes if s != self]
+        self.separate(others)
             
+        temp_accel = self.acc - self.friction * self.vel
+        self.vel += temp_accel * dt
+        vel_change = self.vel * dt
+        self.move(vel_change)
+        self.acc *= 0
+        
+        super().update(dt)
+        
+    
+    def seek(self, target, dt):
+        # get vector from self to target
+        self.desired = target - self.center
+        self.desired = self.desired.normalize()
+        self.desired *= self.speed
+        
+        # calculate steering force
+        self.steer = self.desired - self.vel
+        limit(self.steer, self.steer_sensitivity)
+        
+        self.acc += self.steer
+        
+    
+    def seek_points(self, dt):
+        target = self.path[self.target_index]
+        self.seek(target, dt)
+        d = target - self.center
+        if d.length() < 200:
+            self.target_index += 1
+            if self.target_index == len(self.path):
+                self.target_index = 0
+                self.path = choice([p for p in self.game.paths if len(p) > 1])
+                
+    
+    def separate(self, vehicles):
+        # separates from all other vehicles within a certain range
+        desiredseparation = 60
+        Vsum = vec()
+        count = 0
+        for other in vehicles:
+            d = self.center.distance_to(other.center)
+            if d > 0 and d < desiredseparation:
+                diff = self.center - other.center
+                diff = diff.normalize()
+                diff /= d
+                Vsum += diff
+                count += 1
+        
+        if count > 0:
+            Vsum /= count
+            Vsum = Vsum.normalize()
+            Vsum *= self.speed
+            steer = Vsum - self.vel
+            limit(steer, self.steer_sensitivity)
+            self.acc += steer
+        
+
 
 class Line:
     '''
@@ -661,7 +830,7 @@ class Particle(pg.sprite.Sprite):
     
     
     def update(self, dt):
-        self.alpha -= dt * 10
+        self.alpha -= dt * 40
         if self.alpha <= 0:
             self.game.particles.remove(self)
             return
