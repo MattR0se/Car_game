@@ -1,12 +1,14 @@
-# Car_game
+# Racing_game_neuroevolution
+
+* Libraries needed: pygame, pytmx
+* Control the car with WASD
+* Press H to enable debug mode
 
 
-requires python 3.x (tested with 3.7 only), 
-    pygame and pytmx
 
-control the car with WASD
-
-secret debug mode: H
+Windows standalone executable: https://www.dropbox.com/sh/y0qo2wwfwk9tgmy/AABAvkodM_AITYlojavqAKqRa?dl=0
 
 
-graphics by www.kenney.nl (modified)
+
+
+![Game image](https://i.imgur.com/41OHv7f.png)
